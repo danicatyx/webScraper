@@ -1,0 +1,6 @@
+openai
+requests
+beautifulsoup4
+textblob
+autogen
+praw
