@@ -1,12 +1,11 @@
 from typing import Dict, List
 from autogen import ConversableAgent
-import sys
 import os
 import re
 import praw
 import requests
 
-# Reddit Fetching Function
+# Fetch Car Data from Reddit
 def fetch_car_data(car_model: str) -> Dict[str, List[str]]:
     print(f"Fetching car data for: {car_model}")
     normalized_input = re.sub(r'[^a-zA-Z0-9]', '', car_model).lower()
@@ -32,39 +31,39 @@ def fetch_car_data(car_model: str) -> Dict[str, List[str]]:
             submission.comments.replace_more(limit=0)
             for comment in submission.comments[:3]:
                 reviews.append(comment.body.strip())
-    reviews = [r for r in reviews if r]
     print(f"Found {len(reviews)} Reddit reviews.")
     return {car_model: reviews}
 
-# Bing Web Search API Integration
+# Fetch Car Data from Bing Web Search
 def fetch_web_data(car_model: str) -> Dict[str, List[str]]:
     print(f"Fetching web search results for: {car_model}")
     bing_api_key = os.environ.get("BING_API_KEY")
-    endpoint = "https://api.bing.microsoft.com/v7.0/search"
+    if not bing_api_key:
+        raise ValueError("BING_API_KEY environment variable is not set.")
 
+    endpoint = "https://api.bing.microsoft.com/v7.0/search"
     headers = {"Ocp-Apim-Subscription-Key": bing_api_key}
     params = {"q": f"{car_model} reviews opinions pros cons", "count": 5}
 
     response = requests.get(endpoint, headers=headers, params=params)
-    response.raise_for_status()
+    if response.status_code != 200:
+        raise ValueError(f"Error fetching Bing API: {response.status_code} {response.text}")
 
     data = response.json()
     summaries = []
 
-    # Extract content from search results
     for web_result in data.get("webPages", {}).get("value", []):
         summaries.append(f"{web_result['name']}: {web_result['snippet']}")
-    
+
     print(f"Found {len(summaries)} web search results.")
     return {car_model: summaries}
 
+# Summarize Reviews using GPT-4
 def summarize_reviews_via_llm(reviews: List[str], llm_config) -> List[str]:
     from autogen import OpenAIWrapper
 
-    # Initialize OpenAIWrapper
     model = OpenAIWrapper(api_key=os.environ.get("OPENAI_API_KEY"), model=llm_config["config_list"][0]["model"])
 
-    # Construct prompt
     prompt = f"""
     Here are reviews and opinions about a car model:
     {reviews}
@@ -72,44 +71,51 @@ def summarize_reviews_via_llm(reviews: List[str], llm_config) -> List[str]:
     Summarize the key points about performance, features, reliability, and user feedback.
     """
 
-    # Call the create method with required arguments
     response = model.create(
         messages=[{"role": "user", "content": prompt}]
     )
-
-    # Extract response content
     content = response.choices[0].message.content
     summary = content.split("\n")
 
     return [line.strip() for line in summary if line.strip()]
 
-# Agents Setup
-def create_entrypoint_agent(llm_config):
-    system_message = """
-    You are the main coordinator. Fetch car reviews from Reddit and the web.
-    Combine results and summarize insights for the user.
-    """
-    return ConversableAgent("entrypoint_agent", system_message=system_message, llm_config=llm_config)
-
+# Main Function
 def main(user_query: str):
     llm_config = {"config_list": [{"model": "gpt-4o", "api_key": os.environ.get("OPENAI_API_KEY")}]}
 
     try:
         # Fetch data from Reddit
         reddit_result = fetch_car_data(user_query)
+        reddit_reviews = reddit_result[user_query]
 
         # Fetch data from Web
         web_result = fetch_web_data(user_query)
+        web_reviews = web_result[user_query]
 
-        # Combine results
-        all_reviews = reddit_result[user_query] + web_result[user_query]
-        print(f"\nTotal reviews collected: {len(all_reviews)}")
+        print(f"\nTotal reviews collected: {len(reddit_reviews) + len(web_reviews)}")
 
-        # Summarize reviews via GPT-4
-        summarized_reviews = summarize_reviews_via_llm(all_reviews, llm_config)
+        # Print Reddit Reviews
+        print("\n--- Reddit Reviews ---")
+        if reddit_reviews:
+            for review in reddit_reviews:
+                print(f"- {review}")
+        else:
+            print("No Reddit reviews found.")
+
+        # Print Web Search Reviews
+        print("\n--- Web Search Reviews ---")
+        if web_reviews:
+            for review in web_reviews:
+                print(f"- {review}")
+        else:
+            print("No web search reviews found.")
+
+        # Combine reviews and summarize via GPT-4
+        combined_content = "\n".join(reddit_reviews + web_reviews)
+        summarized_reviews = summarize_reviews_via_llm([combined_content], llm_config)
 
         # Print Final Summary
-        print("\nFinal Summary of Reviews:")
+        print("\n--- Final Summary of Reviews ---")
         for line in summarized_reviews:
             print(f"- {line}")
 
@@ -117,5 +123,6 @@ def main(user_query: str):
         print(f"An error occurred: {str(e)}")
 
 if __name__ == "__main__":
+    import sys
     assert len(sys.argv) > 1, "Please provide a query for a car model."
     main(sys.argv[1])
